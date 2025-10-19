@@ -43,6 +43,7 @@
 #include <memory>
 #include <utility>
 
+#include "common/config.h"
 #include "common/tracer.h"
 #include "exec/schema_scanner/schema_be_tablets_scanner.h"
 #include "runtime/current_thread.h"
