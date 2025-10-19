@@ -1391,6 +1391,31 @@ void Tablet::get_compaction_status(std::string* json_result) {
     base_success_value.SetString(format_str.c_str(), format_str.length(), root.GetAllocator());
     root.AddMember("last_base_success_time", base_success_value, root.GetAllocator());
 
+    // Add corruption tracking information
+    rapidjson::Value corruption_errors;
+    corruption_errors.SetInt(_consecutive_compaction_corruption_errors.load());
+    root.AddMember("consecutive_corruption_errors", corruption_errors, root.GetAllocator());
+    
+    if (_consecutive_compaction_corruption_errors.load() > 0) {
+        rapidjson::Value last_corruption_value;
+        format_str = ToStringFromUnixMillis(_last_compaction_corruption_millis.load());
+        last_corruption_value.SetString(format_str.c_str(), format_str.length(), root.GetAllocator());
+        root.AddMember("last_corruption_time", last_corruption_value, root.GetAllocator());
+        
+        // Calculate and show current backoff status
+        int64_t current_time = UnixMillis();
+        int64_t last_corruption_time = _last_compaction_corruption_millis.load();
+        int32_t error_count = _consecutive_compaction_corruption_errors.load();
+        int64_t base_backoff_ms = config::compaction_corruption_backoff_base_seconds * 1000;
+        int64_t max_backoff_ms = config::compaction_corruption_backoff_max_seconds * 1000;
+        int64_t backoff_time_ms = std::min(base_backoff_ms * (1L << (error_count - 1)), max_backoff_ms);
+        int64_t time_remaining_ms = std::max(0L, backoff_time_ms - (current_time - last_corruption_time));
+        
+        rapidjson::Value backoff_remaining;
+        backoff_remaining.SetInt64(time_remaining_ms / 1000); // in seconds
+        root.AddMember("corruption_backoff_remaining_seconds", backoff_remaining, root.GetAllocator());
+    }
+
     rapidjson::Value rowsets_count;
     rowsets_count.SetUint64(rowsets.size());
     root.AddMember("rowsets_count", rowsets_count, root.GetAllocator());
@@ -1694,6 +1719,28 @@ bool Tablet::has_compaction_task() {
 bool Tablet::need_compaction() {
     std::lock_guard lock(_compaction_task_lock);
     if (_enable_compaction && (config::enable_size_tiered_compaction_strategy || !_has_running_compaction)) {
+        // Check if tablet should be skipped due to corruption errors with backoff
+        int32_t error_count = _consecutive_compaction_corruption_errors.load();
+        if (error_count > 0 && config::max_consecutive_compaction_corruption_errors > 0) {
+            int64_t current_time = UnixMillis();
+            int64_t last_corruption_time = _last_compaction_corruption_millis.load();
+            
+            // Calculate backoff time with exponential backoff
+            int64_t base_backoff_ms = config::compaction_corruption_backoff_base_seconds * 1000;
+            int64_t max_backoff_ms = config::compaction_corruption_backoff_max_seconds * 1000;
+            int64_t backoff_time_ms = std::min(base_backoff_ms * (1L << (error_count - 1)), max_backoff_ms);
+            
+            // Check if we're still in backoff period
+            if (current_time - last_corruption_time < backoff_time_ms) {
+                VLOG(2) << "Tablet " << tablet_id() << " is in corruption backoff period. "
+                        << "Error count: " << error_count 
+                        << ", backoff time: " << backoff_time_ms / 1000 << " seconds, "
+                        << "time remaining: " << (backoff_time_ms - (current_time - last_corruption_time)) / 1000 
+                        << " seconds";
+                return false;
+            }
+        }
+        
         // only the size tiered strategy supports the parallelization of compaction tasks under one tablet
         _compaction_context->type = INVALID_COMPACTION;
         if (_compaction_context->policy->need_compaction(&_compaction_context->score, &_compaction_context->type)) {
@@ -1706,6 +1753,28 @@ bool Tablet::need_compaction() {
 bool Tablet::force_base_compaction() {
     std::lock_guard lock(_compaction_task_lock);
     if (_enable_compaction && (config::enable_size_tiered_compaction_strategy || !_has_running_compaction)) {
+        // Check if tablet should be skipped due to corruption errors with backoff
+        int32_t error_count = _consecutive_compaction_corruption_errors.load();
+        if (error_count > 0 && config::max_consecutive_compaction_corruption_errors > 0) {
+            int64_t current_time = UnixMillis();
+            int64_t last_corruption_time = _last_compaction_corruption_millis.load();
+            
+            // Calculate backoff time with exponential backoff
+            int64_t base_backoff_ms = config::compaction_corruption_backoff_base_seconds * 1000;
+            int64_t max_backoff_ms = config::compaction_corruption_backoff_max_seconds * 1000;
+            int64_t backoff_time_ms = std::min(base_backoff_ms * (1L << (error_count - 1)), max_backoff_ms);
+            
+            // Check if we're still in backoff period
+            if (current_time - last_corruption_time < backoff_time_ms) {
+                VLOG(2) << "Tablet " << tablet_id() << " is in corruption backoff period for force_base_compaction. "
+                        << "Error count: " << error_count 
+                        << ", backoff time: " << backoff_time_ms / 1000 << " seconds, "
+                        << "time remaining: " << (backoff_time_ms - (current_time - last_corruption_time)) / 1000 
+                        << " seconds";
+                return false;
+            }
+        }
+        
         // only the size tiered strategy supports the parallelization of compaction tasks under one tablet
         _compaction_context->type = BASE_COMPACTION;
         if (_compaction_context->policy->need_compaction(&_compaction_context->score, &_compaction_context->type)) {

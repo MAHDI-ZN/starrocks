@@ -429,6 +429,21 @@ CONF_mInt64(size_tiered_level_num, "7");
 // should never be true in prodution.
 CONF_mBool(chaos_test_enable_random_compaction_strategy, "false");
 
+// Maximum number of consecutive corruption errors before a tablet is temporarily
+// excluded from compaction. After this many failures, the tablet will use exponential
+// backoff before being considered for compaction again.
+// Set to -1 to disable this protection (not recommended).
+CONF_mInt32(max_consecutive_compaction_corruption_errors, "3");
+
+// Base backoff time in seconds when a tablet encounters corruption errors during compaction.
+// The actual backoff time uses exponential backoff: base_time * (2 ^ (failure_count - 1))
+// For example, with base time of 600s: 1st retry after 600s, 2nd after 1200s, 3rd after 2400s, etc.
+CONF_mInt32(compaction_corruption_backoff_base_seconds, "600"); // 10 minutes
+
+// Maximum backoff time in seconds for tablets with corruption errors.
+// This caps the exponential backoff to prevent indefinitely long waits.
+CONF_mInt32(compaction_corruption_backoff_max_seconds, "86400"); // 24 hours
+
 CONF_Bool(enable_check_string_lengths, "true");
 
 // Max row source mask memory bytes, default is 200M.

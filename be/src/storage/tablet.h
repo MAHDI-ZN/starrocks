@@ -233,6 +233,16 @@ public:
     int64_t last_base_compaction_success_time() { return _last_base_compaction_success_millis; }
     void set_last_base_compaction_success_time(int64_t millis) { _last_base_compaction_success_millis = millis; }
 
+    // Corruption error tracking for compaction
+    int32_t consecutive_compaction_corruption_errors() const {
+        return _consecutive_compaction_corruption_errors.load();
+    }
+    void increment_compaction_corruption_errors() { _consecutive_compaction_corruption_errors++; }
+    void reset_compaction_corruption_errors() { _consecutive_compaction_corruption_errors = 0; }
+    
+    int64_t last_compaction_corruption_time() const { return _last_compaction_corruption_millis.load(); }
+    void set_last_compaction_corruption_time(int64_t millis) { _last_compaction_corruption_millis = millis; }
+
     void delete_all_files();
 
     bool check_rowset_id(const RowsetId& rowset_id);
@@ -467,6 +477,10 @@ private:
     std::atomic<int64_t> _last_base_compaction_success_millis{0};
 
     std::atomic<TStatusCode::type> _last_cumu_compaction_failure_status = TStatusCode::OK;
+
+    // Corruption error tracking
+    std::atomic<int32_t> _consecutive_compaction_corruption_errors{0};
+    std::atomic<int64_t> _last_compaction_corruption_millis{0};
 
     std::atomic<int64_t> _cumulative_point{0};
     std::atomic<int32_t> _newly_created_rowset_num{0};

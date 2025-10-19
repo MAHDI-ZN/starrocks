@@ -16,6 +16,7 @@
 
 #include <sstream>
 
+#include "common/config.h"
 #include "runtime/current_thread.h"
 #include "runtime/mem_tracker.h"
 #include "storage/compaction_manager.h"
@@ -154,6 +155,9 @@ bool CompactionTask::should_stop() const {
 
 void CompactionTask::_success_callback() {
     set_compaction_task_state(COMPACTION_SUCCESS);
+    // Reset corruption error tracking on successful compaction
+    _tablet->reset_compaction_corruption_errors();
+    
     // for compatible, update compaction time
     int64_t cost_time = UnixMillis() - _task_info.start_time;
     if (_task_info.compaction_type == CUMULATIVE_COMPACTION) {
@@ -193,6 +197,36 @@ void CompactionTask::_success_callback() {
 
 void CompactionTask::_failure_callback(const Status& st) {
     set_compaction_task_state(COMPACTION_FAILED);
+    
+    // Track corruption errors separately to enable exponential backoff
+    if (st.is_corruption()) {
+        _tablet->increment_compaction_corruption_errors();
+        _tablet->set_last_compaction_corruption_time(UnixMillis());
+        int32_t error_count = _tablet->consecutive_compaction_corruption_errors();
+        
+        // Calculate backoff time with exponential backoff
+        int64_t base_backoff = config::compaction_corruption_backoff_base_seconds;
+        int64_t max_backoff = config::compaction_corruption_backoff_max_seconds;
+        int64_t backoff_time = std::min(base_backoff * (1L << (error_count - 1)), max_backoff);
+        
+        LOG(WARNING) << "Compaction corruption error detected for tablet " << _tablet->tablet_id()
+                     << ", consecutive errors: " << error_count
+                     << ", backoff time: " << backoff_time << " seconds"
+                     << ", error: " << st.to_string();
+        
+        // If we've exceeded the max consecutive errors, issue a more severe warning
+        if (config::max_consecutive_compaction_corruption_errors > 0 &&
+            error_count >= config::max_consecutive_compaction_corruption_errors) {
+            LOG(WARNING) << "Tablet " << _tablet->tablet_id() 
+                         << " has reached maximum consecutive corruption errors ("
+                         << error_count << "). This tablet may have persistent data corruption "
+                         << "and will use exponential backoff for compaction retries.";
+        }
+    } else {
+        // Reset corruption counter for non-corruption errors
+        _tablet->reset_compaction_corruption_errors();
+    }
+    
     if (_task_info.compaction_type == CUMULATIVE_COMPACTION) {
         _tablet->set_last_cumu_compaction_failure_time(UnixMillis());
         _tablet->set_last_cumu_compaction_failure_status(st.code());
